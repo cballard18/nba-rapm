@@ -3,7 +3,6 @@ library(data.table)
 library(Matrix)
 library(glmnet)
 
-# ---- Load 3 years of PBP data ----
 pbp <- rbindlist(lapply(2023:2025, function(x) {
   dt <- read_rds(glue::glue("https://github.com/ramirobentes/nba_pbp_data/raw/main/pbp-final-{x}/data.rds")) |>
     as.data.table()
@@ -11,14 +10,11 @@ pbp <- rbindlist(lapply(2023:2025, function(x) {
   dt
 }), fill = TRUE)
 
-# ---- Parse lineups ----
 pbp[, `:=`(
   lineup_home = str_split(lineup_home, ",\\s*"),
   lineup_away = str_split(lineup_away, ",\\s*")
 )]
-# Build player_id → canonical name map before IDs are stripped.
-# Takes the most frequently occurring spelling per ID to resolve
-# cross-season inconsistencies (e.g. accented vs unaccented names).
+# Canonical name map (most frequent spelling per ID across seasons).
 .raw <- rbindlist(list(
   data.table(raw = unlist(pbp$lineup_home)),
   data.table(raw = unlist(pbp$lineup_away))
@@ -42,9 +38,7 @@ for (k in 1:5) {
 }
 pbp[, c("lineup_home", "lineup_away") := NULL]
 
-# ---- Build possession-level data ----
-# msg_type: 1=made FG, 2=missed FG, 3=free throw, 4=rebound, 5=turnover
-# opt1: 3=3-pointer, 2=2-pointer, 1=off rebound, 0=def rebound
+# msg_type: 1=FG, 2=miss, 3=FT, 4=reb, 5=TOV; opt1: 3=3P, 1=ORB
 setorder(pbp, game_id, period, secs_game, event_num, number_event)
 
 pbp[, start_poss_filled := zoo::na.locf(start_poss, na.rm = FALSE), by = .(game_id, period)]
@@ -64,7 +58,6 @@ poss_df <- pbp[, .(
   team_away = first(team_away),
   home_pts  = sum(shot_pts_home, na.rm = TRUE),
   away_pts  = sum(shot_pts_away, na.rm = TRUE),
-  # Four-factor counting stats by side
   fgm_home  = sum(msg_type == 1L & team_abb == team_home,                         na.rm = TRUE),
   fga_home  = sum(msg_type %in% c(1L, 2L) & team_abb == team_home,               na.rm = TRUE),
   fg3m_home = sum(msg_type == 1L & opt1 == 3L & team_abb == team_home,            na.rm = TRUE),
@@ -95,7 +88,6 @@ poss_df[, home_on_off := (off_team == team_home)]
 poss_df[, poss_idx := .I]
 n_poss <- nrow(poss_df)
 
-# Derive offensive-team four-factor columns
 poss_df[, `:=`(
   off_fgm  = fifelse(home_on_off, fgm_home,  fgm_away),
   off_fga  = fifelse(home_on_off, fga_home,  fga_away),
@@ -105,11 +97,9 @@ poss_df[, `:=`(
   off_fta  = fifelse(home_on_off, fta_home,  fta_away)
 )]
 
-# ---- Recency weights ----
 season_weights <- c("2023" = 0.20, "2024" = 0.30, "2025" = 0.50)
 w <- season_weights[as.character(poss_df$season)]
 
-# ---- Build sparse design matrix (identical to RAPM intro.R) ----
 home_long <- melt(poss_df, id.vars = c("poss_idx", "home_on_off"),
                   measure.vars = home_cols, value.name = "player")[!is.na(player)]
 away_long <- melt(poss_df, id.vars = c("poss_idx", "home_on_off"),
@@ -140,33 +130,22 @@ X_od <- sparseMatrix(
 
 poss_counts <- rbind(home_long[, .(player)], away_long[, .(player)])[, .N, by = player]
 
-# ---- Response vectors for the four factors ----
-# eFG numerator: FGM + 0.5*FG3M. Ridge coef = per-100-poss eFG RAPM contribution.
 y_efg <- poss_df$off_fgm + 0.5 * poss_df$off_fg3m
-
-# TOV: 1 if possession ended in a turnover, 0 otherwise.
-# Higher otov_rapm = more turnovers generated (bad); higher dtov_rapm = more turnovers forced (good).
 y_tov <- as.numeric(poss_df$off_tov > 0)
-
-# ORB: 1 if offense grabbed an offensive rebound this possession, 0 otherwise.
 y_orb <- as.numeric(poss_df$off_orb > 0)
-
-# FTR: free throw attempts drawn per possession.
 y_ftr <- as.numeric(poss_df$off_fta)
 
-# ---- Fit one ridge regression per factor ----
 fit_factor_rapm <- function(y, label_o, label_d) {
-  cat(sprintf("  Fitting %s / %s ...\n", label_o, label_d))
   set.seed(42)
   cv_fit <- cv.glmnet(
     x           = X_od,
     y           = y,
     weights     = w,
-    alpha       = 0,           # ridge
-    standardize = FALSE,       # +1/-1 encoding is already on the same scale
+    alpha       = 0,
+    standardize = FALSE,
     nfolds      = 10
   )
-  coefs <- as.vector(coef(cv_fit, s = "lambda.min"))[-1] * 100  # drop intercept; scale to per-100
+  coefs <- as.vector(coef(cv_fit, s = "lambda.min"))[-1] * 100
   tibble(
     player      = all_players,
     !!label_o  := coefs[1:n_players],
@@ -174,13 +153,11 @@ fit_factor_rapm <- function(y, label_o, label_d) {
   )
 }
 
-cat("Running four-factor RAPM ridge regressions...\n")
 efg_df <- fit_factor_rapm(y_efg, "oefg_rapm", "defg_rapm")
 tov_df <- fit_factor_rapm(y_tov, "otov_rapm", "dtov_rapm")
 orb_df <- fit_factor_rapm(y_orb, "oorb_rapm", "dorb_rapm")
 ftr_df <- fit_factor_rapm(y_ftr, "oftr_rapm", "dftr_rapm")
 
-# ---- Combine all four factors ----
 factor_rapm <- Reduce(
   function(a, b) left_join(a, b, by = "player"),
   list(efg_df, tov_df, orb_df, ftr_df)

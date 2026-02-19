@@ -2,16 +2,13 @@ library(tidyverse)
 library(ggrepel)
 library(patchwork)
 
-# ── Load datasets ─────────────────────────────────────────────────────────────
 rapm        <- read_csv("datasets/rapm.csv")
 four_factor <- read_csv("datasets/4factor_rapm.csv")
 usage_rapm  <- read_csv("datasets/usage_rapm.csv")
 
 dir.create("plots", showWarnings = FALSE)
 
-MIN_POSS <- 1000  
-
-# ── Plot 1: Offense vs. Defense Quadrant ─────────────────────────────────────
+MIN_POSS <- 1000
 
 p1 <- rapm %>%
   filter(poss >= MIN_POSS) %>%
@@ -47,7 +44,7 @@ p1 <- rapm %>%
   ) +
   scale_size_continuous(range = c(1.5, 5), guide = "none") +
   labs(
-    title    = "Offense and Defensive RAPM (2023–25)",
+    title    = "Offensive and Defensive RAPM (2023–25)",
     subtitle = "Point size = possessions played · Players with ≥ 1,000 possessions",
     x        = "Offensive RAPM  (pts / 100 poss, higher = better)",
     y        = "Defensive RAPM  (pts / 100 poss, higher = better)",
@@ -55,8 +52,6 @@ p1 <- rapm %>%
   ) +
   theme_minimal(base_size = 12) +
   theme(plot.title = element_text(face = "bold"), legend.position = "top")
-
-# ── Plot 2: Top 20 by RAPM — Offense vs. Defense Share ───────────────────────
 
 top20 <- rapm %>%
   filter(poss >= MIN_POSS) %>%
@@ -90,8 +85,6 @@ p2 <- top20 %>%
   ) +
   theme_minimal(base_size = 12) +
   theme(plot.title = element_text(face = "bold"), legend.position = "top")
-
-# ── Plot 3: Four-Factor Profiles — Top 20 Offense + Top 20 Defense ───────────
 
 top20_off_names <- rapm %>%
   filter(poss >= MIN_POSS) %>%
@@ -177,10 +170,8 @@ p3 <- (p3_off / p3_def) +
     )
   )
 
-# ── Plot 4: Usage-Tier Slope Chart ────────────────────────────────────────────
-
 featured_players <- c(
-  "Nikola Jokić", "Shai Gilgeous-Alexander", "Giannis Antetokounmpo", "Jayson Tatum",
+  "Nikola Jokic", "Nikola Jokić", "Shai Gilgeous-Alexander", "Giannis Antetokounmpo", "Jayson Tatum",
   "Draymond Green", "Herbert Jones", "Isaiah Hartenstein", "Dorian Finney-Smith"
 )
 
@@ -199,7 +190,7 @@ p4_data <- usage_rapm %>%
       labels = c("Primary\n(High Usage)", "Secondary\n(Mid Usage)", "Tertiary\n(Low Usage)")
     ),
     archetype = if_else(
-      player %in% c("Nikola Jokić", "Shai Gilgeous-Alexander",
+      player %in% c("Nikola Jokic", "Nikola Jokić", "Shai Gilgeous-Alexander",
                     "Giannis Antetokounmpo", "Jayson Tatum"),
       "Star", "Role Player"
     )
@@ -232,10 +223,8 @@ p4 <- p4_data %>%
   theme_minimal(base_size = 12) +
   theme(plot.title = element_text(face = "bold"), legend.position = "top")
 
-# ── Save all plots ─────────────────────────────────────────────────────────────
 ggsave("plots/p1_two_way_quadrant.png", p1, width = 10, height = 8,  dpi = 150)
 ggsave("plots/p2_top20_stacked.png",    p2, width = 9,  height = 8,  dpi = 150)
 ggsave("plots/p3_four_factor.png",      p3, width = 14, height = 16, dpi = 150)
 ggsave("plots/p4_usage_tiers.png",      p4, width = 10, height = 7,  dpi = 150)
 
-message("All 4 plots saved to plots/")
